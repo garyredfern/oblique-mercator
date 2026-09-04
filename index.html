@@ -259,7 +259,7 @@ function load(res) {
         dl.appendChild(Object.assign(document.createElement("option"), { value: n }));
       });
     }
-    status.textContent = `${byName.size / 2} countries & territories · Natural Earth ${res.replace("m", " m")}`;
+    status.textContent = `${document.getElementById("countries").options.length} countries & territories · Natural Earth ${res.replace("m", " m")}`;
     resize();
   }).catch(e => { status.className = "err"; status.textContent = `Could not load ${res} border data: ${e.message}`; });
 }
