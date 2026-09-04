@@ -1,6 +1,6 @@
 # Oblique Mercator — the world, re-centred on one country
 
-**Live:** https://YOUR-PROJECT.pages.dev *(replace with your link)*
+**Live:** oblique-mercator.gary-afa.workers.dev
 
 Pick any of 241 countries and territories and the whole world re-projects as an
 **oblique Mercator** whose equator runs through that country's centre. Because
