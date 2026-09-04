@@ -1,0 +1,284 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Oblique Mercator — true shape, in context</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root, [data-theme="dark"]{
+    --ocean:#0F1E2D; --land:#2A3A46; --border:#7F97A6; --grat:#30455A;
+    --select:#E8B04B; --select-fill:rgba(232,176,75,.45); --equator:rgba(232,176,75,.7);
+    --ghost:#6FB3D2; --ghost-fill:rgba(111,179,210,.18);
+    --ink:#E9EEF2; --muted:#8FA3B3; --panel:rgba(15,30,45,.88); --err:#F08A8A;
+    --mono:"IBM Plex Mono",ui-monospace,Menlo,monospace; --serif:"Instrument Serif",Georgia,serif;
+  }
+  /* Light: Google-Maps-like — pale blue water, sand land, soft grey-brown borders */
+  [data-theme="light"]{
+    --ocean:#A9D3F2; --land:#EDE6D3; --border:#B3A78F; --grat:#8FC0E4;
+    --select:#C46A00; --select-fill:rgba(232,150,40,.45); --equator:rgba(196,106,0,.75);
+    --ghost:#1D5FA8; --ghost-fill:rgba(29,95,168,.16);
+    --ink:#1F2A33; --muted:#5E6C78; --panel:rgba(252,250,245,.9); --err:#B23A3A;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--ocean);color:var(--ink);font-family:var(--mono);overflow:hidden}
+  #map{position:fixed;inset:0;display:block;cursor:grab}
+  #panel{position:fixed;top:18px;left:18px;width:min(340px,calc(100vw - 36px));background:var(--panel);
+    backdrop-filter:blur(8px);border:1px solid var(--grat);padding:14px 16px 16px;}
+  h1{font:italic 400 26px/1.05 var(--serif);margin:0 0 2px;letter-spacing:.01em}
+  .sub{font-size:11px;color:var(--muted);margin:0 0 12px;letter-spacing:.04em;text-transform:uppercase}
+  label{display:block;font-size:11px;color:var(--muted);margin-bottom:4px;letter-spacing:.04em;text-transform:uppercase}
+  input{width:100%;background:var(--ocean);color:var(--ink);border:1px solid var(--border);padding:9px 10px;
+    font:500 14px var(--mono);outline:none}
+  input:focus{border-color:var(--equator)}
+  #readout{margin-top:12px;font-size:12px;line-height:1.7;color:var(--muted);min-height:3.4em}
+  #readout b{color:var(--ink);font-weight:500}
+  #readout .eq{color:var(--equator)}
+  #readout .gh{color:var(--ghost)}
+  button[aria-pressed="true"]{color:var(--ink);border-color:var(--ghost)}
+  #map:active{cursor:grabbing}
+  .row{display:flex;gap:8px;margin-top:10px}
+  button{background:transparent;color:var(--muted);border:1px solid var(--grat);padding:6px 10px;font:11px var(--mono);
+    letter-spacing:.04em;text-transform:uppercase;cursor:pointer}
+  button:hover,button:focus-visible{color:var(--ink);border-color:var(--border);outline:none}
+  #status{position:fixed;bottom:14px;left:18px;font-size:11px;color:var(--muted)}
+  #zoom{position:fixed;bottom:14px;right:18px;font-size:11px;color:var(--muted)}
+  button:disabled{opacity:.5;cursor:wait}
+  .row button{flex:1 1 auto}
+  @media (max-width:480px){
+    #panel{top:auto;bottom:0;left:0;width:100vw;border-width:1px 0 0;padding:10px 14px 12px}
+    h1{font-size:20px} .sub{display:none} #readout{min-height:0;font-size:11px;line-height:1.55}
+    #status{bottom:auto;top:10px;left:12px} #zoom{bottom:auto;top:10px}
+  }
+  @media (prefers-reduced-motion:reduce){*{transition:none!important}}
+  #status.err{color:var(--err)}
+</style>
+</head>
+<body>
+<canvas id="map"></canvas>
+<div id="panel">
+  <h1>Oblique Mercator</h1>
+  <p class="sub">the world, re-centred on one country · keys: / search · 0 reset · g ghost · t theme</p>
+  <label for="country">Country or territory</label>
+  <input id="country" list="countries" placeholder="Type to search — 241 entries" autocomplete="off">
+  <datalist id="countries"></datalist>
+  <div class="row"><button id="reset">Reset view</button><button id="ghost" aria-pressed="true">Show standard-Mercator ghost</button></div>
+  <div class="row"><button id="detail" aria-pressed="false">Borders: 50 m → load 10 m</button><button id="theme">Light view</button></div>
+  <div id="readout">Pick a country. The map re-projects so the projection's equator runs through its centre — it is drawn at true shape and relative size. The dotted blue ghost is the same country as a standard north-up Mercator map would draw it.</div>
+</div>
+<div id="zoom"></div>
+<div id="status">Loading Natural Earth 50 m borders…</div>
+
+<script src="https://cdn.jsdelivr.net/npm/d3@7"></script>
+<script src="https://cdn.jsdelivr.net/npm/topojson-client@3"></script>
+<script src="https://cdn.jsdelivr.net/npm/topojson-simplify@3"></script>
+<script>
+// ---- data -------------------------------------------------------------
+const DATA_URL = r => `https://cdn.jsdelivr.net/npm/world-atlas@2/countries-${r}.json`;
+// world-atlas abbreviates some names; expand for the search box.
+const LONG_NAMES = {
+  "Antigua and Barb.":"Antigua and Barbuda","Bosnia and Herz.":"Bosnia and Herzegovina",
+  "Br. Indian Ocean Ter.":"British Indian Ocean Territory","British Virgin Is.":"British Virgin Islands",
+  "Cayman Is.":"Cayman Islands","Central African Rep.":"Central African Republic","Cook Is.":"Cook Islands",
+  "Dem. Rep. Congo":"Democratic Republic of the Congo","Dominican Rep.":"Dominican Republic","Eq. Guinea":"Equatorial Guinea",
+  "Faeroe Is.":"Faroe Islands","Falkland Is.":"Falkland Islands","Fr. Polynesia":"French Polynesia",
+  "Fr. S. Antarctic Lands":"French Southern and Antarctic Lands","Heard I. and McDonald Is.":"Heard Island and McDonald Islands",
+  "Indian Ocean Ter.":"Indian Ocean Territories","Marshall Is.":"Marshall Islands","N. Cyprus":"Northern Cyprus",
+  "N. Mariana Is.":"Northern Mariana Islands","Pitcairn Is.":"Pitcairn Islands","S. Geo. and the Is.":"South Georgia and the South Sandwich Islands",
+  "S. Sudan":"South Sudan","Solomon Is.":"Solomon Islands","St. Kitts and Nevis":"Saint Kitts and Nevis",
+  "St. Pierre and Miquelon":"Saint Pierre and Miquelon","St. Vin. and Gren.":"Saint Vincent and the Grenadines",
+  "St-Barthélemy":"Saint Barthélemy","St-Martin":"Saint Martin","Turks and Caicos Is.":"Turks and Caicos Islands",
+  "U.S. Virgin Is.":"U.S. Virgin Islands","W. Sahara":"Western Sahara","Wallis and Futuna Is.":"Wallis and Futuna",
+  "Macedonia":"North Macedonia","eSwatini":"Eswatini","Vatican":"Vatican City","Åland":"Åland Islands"
+};
+const displayName = f => LONG_NAMES[f.properties.name] || f.properties.name;
+
+// ---- state -------------------------------------------------------------
+const canvas = document.getElementById("map");
+const ctx = canvas.getContext("2d");
+const readout = document.getElementById("readout");
+const status = document.getElementById("status");
+let showGhost = true;
+let countries = [], byName = new Map(), borders = null, selected = null, dpr = 1, W = 0, H = 0, baseScale = 1;
+let full = null, resolution = "50m", levelCache = new Map(), currentLevel = null;
+
+// ---- zoom-dependent simplification ------------------------------------------
+// presimplify weights every vertex by the area of the triangle it subtends; simplify() drops
+// vertices below a threshold. We pick the threshold from what one screen pixel spans in
+// degrees at the current scale, quantised to bands of ×4 so we rebuild only on big zoom changes.
+function levelFor(scale) {
+  const degPerPx = 180 / (Math.PI * scale);
+  const band = Math.max(-8, Math.min(2, Math.floor(Math.log(degPerPx * degPerPx) / Math.log(4))));
+  const key = resolution + ":" + band;
+  if (!levelCache.has(key)) {
+    const topo = topojson.simplify(full, Math.pow(4, band) * 0.25);
+    const feats = topojson.feature(topo, topo.objects.countries).features;
+    levelCache.set(key, { feats, mesh: topojson.mesh(topo, topo.objects.countries), byId: new Map(feats.map(f => [f.id, f])) });
+  }
+  return levelCache.get(key);
+}
+function useLevel(scale) {
+  const L = levelFor(scale);
+  if (L === currentLevel) return;
+  currentLevel = L; countries = L.feats; borders = L.mesh;
+  if (selected) selected = L.byId.get(selected.id) || selected;
+}
+
+// Oblique Mercator: rotate the sphere so the chosen centroid sits at (0°,0°),
+// then apply ordinary Mercator. Latitude is clipped at ±85° of the *rotated*
+// frame, so the two "poles" of the oblique frame (antipode-adjacent) don't blow up.
+const projection = d3.geoMercator().precision(0.2);
+const graticule = d3.geoGraticule().step([15, 15]);
+const obliqueEquator = { type: "LineString", coordinates: d3.range(-180, 181, 2).map(x => [x, 0]) };
+
+function resize() {
+  dpr = window.devicePixelRatio || 1;
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = W * dpr; canvas.height = H * dpr;
+  canvas.style.width = W + "px"; canvas.style.height = H + "px";
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  baseScale = Math.min(W, H) / (2 * Math.PI) * 1.05;
+  projection.clipExtent([[0, 0], [W, H]]);
+  applyZoom(d3.zoomTransform(canvas));
+}
+
+function draw() {
+  if (!countries.length) return;
+  const path = d3.geoPath(projection, ctx);
+  const cs = getComputedStyle(document.documentElement), T = n => cs.getPropertyValue("--" + n).trim();
+  ctx.clearRect(0, 0, W, H);
+
+  // graticule of the rotated frame
+  ctx.beginPath(); path(graticule()); ctx.strokeStyle = T("grat"); ctx.lineWidth = .6; ctx.stroke();
+
+  // land
+  ctx.beginPath(); countries.forEach(f => path(f)); ctx.fillStyle = T("land"); ctx.fill();
+  // borders (interior + coast), drawn once via mesh so shared edges aren't doubled
+  ctx.beginPath(); path(borders); ctx.strokeStyle = T("border"); ctx.lineWidth = .7; ctx.stroke();
+
+  if (selected) {
+    ctx.beginPath(); path(selected); ctx.fillStyle = T("select-fill"); ctx.fill();
+    ctx.strokeStyle = T("select"); ctx.lineWidth = 1.4; ctx.stroke();
+
+    if (showGhost) {
+      // Same nominal scale as the oblique map, ordinary north-up Mercator, pinned so the
+      // country's centroid lands on the same screen pixel. This is the shape you'd see on
+      // Google Maps / a wall map, superimposed on its true shape.
+      const c = d3.geoCentroid(selected);
+      const ghost = d3.geoMercator().rotate([-c[0], 0, 0]).scale(projection.scale()).translate([0, 0]).precision(0.2);
+      const [gx, gy] = ghost(c), [px, py] = projection(c);
+      ghost.translate([px - gx, py - gy]).clipExtent([[0, 0], [W, H]]);
+      const gpath = d3.geoPath(ghost, ctx);
+      ctx.beginPath(); gpath(selected);
+      ctx.fillStyle = T("ghost-fill"); ctx.fill();
+      ctx.strokeStyle = T("ghost"); ctx.lineWidth = 1.2; ctx.setLineDash([3, 3]); ctx.stroke(); ctx.setLineDash([]);
+    }
+    // the projection's equator — the line of zero distortion — passes through the selection
+    ctx.beginPath(); path(obliqueEquatorRotated()); ctx.strokeStyle = T("equator"); ctx.lineWidth = 1; ctx.setLineDash([6, 5]); ctx.stroke(); ctx.setLineDash([]);
+  }
+}
+
+// ---- zoom / pan -----------------------------------------------------------
+// Zoom transform k,x,y maps onto Mercator scale & translate. Panning moves the
+// *view*, never the rotation, so the chosen centre stays the line of zero distortion.
+const zoom = d3.zoom().scaleExtent([1, 200]).on("zoom", e => applyZoom(e.transform));
+function applyZoom(t) {
+  // d3.zoom's transform maps base-view pixel coords p → k·p + [x,y]. Our base view has the
+  // centroid at (W/2,H/2), so its translate must be t.apply([W/2,H/2]) — not W/2 + x — or
+  // zooming about the cursor/centre drifts the country towards the top-left.
+  projection.scale(baseScale * t.k).translate(t.apply([W / 2, H / 2]));
+  useLevel(projection.scale());
+  document.getElementById("zoom").textContent = `×${t.k.toFixed(t.k < 10 ? 1 : 0)}`;
+  draw();
+}
+d3.select(canvas).call(zoom);
+const ghostBtn = document.getElementById("ghost");
+ghostBtn.onclick = () => { showGhost = !showGhost; ghostBtn.setAttribute("aria-pressed", showGhost); draw(); };
+const themeBtn = document.getElementById("theme");
+function setTheme(t) {
+  document.documentElement.dataset.theme = t;
+  themeBtn.textContent = t === "dark" ? "Light view" : "Dark view";
+  try { localStorage.setItem("om-theme", t); } catch (_) {}
+  draw();
+}
+themeBtn.onclick = () => setTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
+setTheme((() => { try { return localStorage.getItem("om-theme"); } catch (_) {} })() || (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark"));
+const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const resetView = () => d3.select(canvas).transition().duration(reduceMotion ? 0 : 500).call(zoom.transform, d3.zoomIdentity);
+document.getElementById("reset").onclick = resetView;
+window.addEventListener("keydown", e => {
+  if (e.target.tagName === "INPUT" && e.key !== "Escape") return;
+  if (e.key === "/") { e.preventDefault(); input.focus(); input.select(); }
+  else if (e.key === "0") resetView();
+  else if (e.key === "g") ghostBtn.click();
+  else if (e.key === "t") themeBtn.click();
+  else if (e.key === "Escape") input.blur();
+});
+
+// The projection's equator in *geographic* coords = the rotated frame's equator mapped back.
+function obliqueEquatorRotated() {
+  const inv = d3.geoRotation(projection.rotate()).invert;
+  return { type: "LineString", coordinates: obliqueEquator.coordinates.map(inv) };
+}
+
+function select(name) {
+  const f = byName.get(name.trim().toLowerCase());
+  if (!f) { readout.innerHTML = `No country or territory called <b>${name}</b> in the list.`; return; }
+  selected = f;
+  const [lon, lat] = d3.geoCentroid(f);           // spherical centroid (area-weighted, multi-part aware)
+  projection.rotate([-lon, -lat, 0]);
+  d3.select(canvas).call(zoom.transform, d3.zoomIdentity);
+  const fmt = (v, p, n) => `${Math.abs(v).toFixed(2)}°${v >= 0 ? p : n}`;
+  const R = 6371.0088;                                  // mean Earth radius, km
+  const areaKm2 = d3.geoArea(f) * R * R;                // true spherical area
+  const lin = 1 / Math.cos(lat * Math.PI / 180);        // Mercator linear stretch at centroid latitude
+  // Whole-shape ratio: pixel area of the ghost ÷ pixel area of the true shape, at unit scale, unclipped.
+  // Differs from the centroid-point factor because stretch grows with latitude across the country.
+  const u = d3.geoMercator().rotate([-lon, -lat, 0]).scale(1000).clipExtent(null);
+  const g = d3.geoMercator().rotate([-lon, 0, 0]).scale(1000).clipExtent(null);
+  const shapeRatio = d3.geoPath(g).area(f) / d3.geoPath(u).area(f);
+  const km = v => v >= 1e6 ? (v / 1e6).toFixed(2) + " M km²" : Math.round(v).toLocaleString() + " km²";
+  readout.innerHTML = `<b>${displayName(f)}</b><br>centre ${fmt(lat,"N","S")}, ${fmt(lon,"E","W")}<br>` +
+    `true area <b>${km(areaKm2)}</b><br>` +
+    `<span class="gh">· · standard Mercator at this latitude: ×${lin.toFixed(2)} linear at centre · ghost is ×${shapeRatio.toFixed(1)} the true area</span><br>` +
+    `<span class="eq">— — projection equator through this point</span>`;
+}
+
+// ---- boot ---------------------------------------------------------------
+function load(res) {
+  status.className = ""; status.textContent = `Loading Natural Earth ${res.replace("m", " m")} borders…`;
+  return d3.json(DATA_URL(res)).then(topo => {
+    full = topojson.presimplify(topo); resolution = res; levelCache.clear(); currentLevel = null;
+    if (!byName.size) {
+      const feats = topojson.feature(topo, topo.objects.countries).features.sort((a, b) => displayName(a).localeCompare(displayName(b)));
+      const dl = document.getElementById("countries");
+      feats.forEach(f => {
+        const n = displayName(f);
+        byName.set(n.toLowerCase(), f); byName.set(f.properties.name.toLowerCase(), f);
+        dl.appendChild(Object.assign(document.createElement("option"), { value: n }));
+      });
+    }
+    status.textContent = `${byName.size / 2} countries & territories · Natural Earth ${res.replace("m", " m")}`;
+    resize();
+  }).catch(e => { status.className = "err"; status.textContent = `Could not load ${res} border data: ${e.message}`; });
+}
+load("50m");
+const detailBtn = document.getElementById("detail");
+detailBtn.onclick = () => {
+  const next = resolution === "50m" ? "10m" : "50m";
+  detailBtn.disabled = true;
+  load(next).then(() => {
+    detailBtn.disabled = false;
+    detailBtn.setAttribute("aria-pressed", next === "10m");
+    detailBtn.textContent = next === "10m" ? "Borders: 10 m → back to 50 m" : "Borders: 50 m → load 10 m";
+  });
+};
+
+const input = document.getElementById("country");
+input.addEventListener("change", () => select(input.value));
+input.addEventListener("keydown", e => { if (e.key === "Enter") select(input.value); });
+window.addEventListener("resize", resize);
+</script>
+</body>
+</html>
